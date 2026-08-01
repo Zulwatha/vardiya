@@ -1,0 +1,59 @@
+{
+  "name": "vardiya",
+  "version": "0.1.0",
+  "description": "A SQLite-backed job queue for Node.js. Durable background jobs with zero infrastructure beyond a single SQLite file.",
+  "license": "MIT",
+  "author": "",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "biome check .",
+    "bench": "vitest bench --run"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.13.4",
+    "tsup": "^8.3.6",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  },
+  "keywords": [
+    "job-queue",
+    "sqlite",
+    "background-jobs",
+    "worker",
+    "scheduler",
+    "bullmq"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/example/vardiya.git"
+  }
+}
