@@ -1,10 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { SqliteStorage } from "../../src/storage/sqlite.js";
 import { sleep } from "../../src/util/sleep.js";
-import { hasSqlite, hasWorkerRuntime } from "../helpers/modules.js";
+import { WorkerRuntime } from "../../src/worker/worker.js";
 
-const ready = hasSqlite && hasWorkerRuntime;
-
-describe.skipIf(!ready)("WorkerRuntime graceful shutdown", () => {
+describe("WorkerRuntime graceful shutdown", () => {
   const cleanups: Array<() => void | Promise<void>> = [];
 
   afterEach(async () => {
@@ -14,9 +13,6 @@ describe.skipIf(!ready)("WorkerRuntime graceful shutdown", () => {
   });
 
   it("drains in-flight jobs and leaves no active rows", async () => {
-    const { SqliteStorage } = await import("../../src/storage/sqlite.js");
-    const { WorkerRuntime } = await import("../../src/worker/worker.js");
-
     const storage = new SqliteStorage(":memory:");
     storage.init();
     cleanups.push(() => storage.close());
@@ -61,10 +57,46 @@ describe.skipIf(!ready)("WorkerRuntime graceful shutdown", () => {
     expect(counts.completed + counts.pending + counts.delayed + counts.dead).toBe(4);
   });
 
-  it("stop is idempotent when already idle", async () => {
-    const { SqliteStorage } = await import("../../src/storage/sqlite.js");
-    const { WorkerRuntime } = await import("../../src/worker/worker.js");
+  it("releases aborted leftovers without burning an attempt", async () => {
+    const storage = new SqliteStorage(":memory:");
+    storage.init();
+    cleanups.push(() => storage.close());
 
+    const worker = new WorkerRuntime(storage, {
+      concurrency: 1,
+      pollIntervalMs: 20,
+      minPollIntervalMs: 5,
+      drainTimeoutMs: 30,
+      heartbeatIntervalMs: 100,
+    });
+    cleanups.push(() => worker.stop());
+
+    worker.process("block", async (_job, ctx) => {
+      await sleep(10_000, ctx.signal);
+    });
+
+    const job = storage.enqueue({
+      queue: "default",
+      name: "block",
+      payload: {},
+      options: { maxAttempts: 3 },
+    });
+
+    await worker.start();
+    await sleep(50);
+    expect(storage.getJob(job.id)?.status).toBe("active");
+    expect(storage.getJob(job.id)?.attempts).toBe(1);
+
+    await worker.stop();
+
+    const after = storage.getJob(job.id);
+    expect(after?.status).toBe("pending");
+    expect(after?.attempts).toBe(0);
+    expect(after?.lastError).toBeUndefined();
+    expect(storage.counts().active).toBe(0);
+  });
+
+  it("stop is idempotent when already idle", async () => {
     const storage = new SqliteStorage(":memory:");
     storage.init();
     cleanups.push(() => storage.close());

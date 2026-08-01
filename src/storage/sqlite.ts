@@ -69,6 +69,7 @@ type Prepared = {
   promoteDelayed: Statement;
   heartbeat: Statement;
   reclaimStale: Statement;
+  release: Statement;
   cancelTerminal: Statement;
   cancelActive: Statement;
   countsAll: Statement;
@@ -184,7 +185,7 @@ function emptyCounts(): JobCounts {
  * SQL statements (microseconds to low milliseconds). Wrapping them in async
  * would only add Promise overhead and still block the event loop during the
  * native call. Callers that need concurrency yield between claims (see
- * `selfcheck.ts`); multi-process safety comes from WAL + atomic UPDATE claim.
+ * the torture suite); multi-process safety comes from WAL + atomic UPDATE claim.
  */
 export class SqliteStorage implements Storage {
   readonly path: string;
@@ -464,13 +465,6 @@ export class SqliteStorage implements Storage {
     withBusyRetry(() => this.stmts.heartbeat.run(now, now, id));
   }
 
-  /*
-   * PROPOSED-CHANGE:
-   * What: add Storage.reclaimStale(now, staleAfterMs)
-   * Why: workers die mid-job and active rows need reclaim
-   * Suggested shape: reclaimStale(now: number, staleAfterMs: number): number
-   */
-
   /**
    * Return active jobs whose heartbeat is older than `staleAfterMs` to
    * `pending`. Attempts are preserved (they were incremented on claim).
@@ -481,6 +475,21 @@ export class SqliteStorage implements Storage {
     const threshold = now - staleAfterMs;
     const result = withBusyRetry(() => this.stmts.reclaimStale.run(now, threshold));
     return result.changes;
+  }
+
+  /**
+   * Return an active job to `pending` without burning an attempt or writing
+   * `lastError`. Clears heartbeat and cancel state; decrements attempts to
+   * undo the claim increment.
+   */
+  release(id: string): Job {
+    this.assertReady();
+    const now = Date.now();
+    const row = withBusyRetry(() => this.stmts.release.get(now, id) as JobRow | undefined);
+    if (!row) {
+      throw new Error(`release: active job not found: ${id}`);
+    }
+    return rowToJob(row);
   }
 
   /**
@@ -686,6 +695,16 @@ export class SqliteStorage implements Storage {
         WHERE status = 'active'
           AND heartbeat_at IS NOT NULL
           AND heartbeat_at < ?
+      `),
+      release: this.db.prepare(`
+        UPDATE jobs
+        SET status = 'pending',
+            attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END,
+            updated_at = ?,
+            heartbeat_at = NULL,
+            cancel_requested = 0
+        WHERE id = ? AND status = 'active'
+        RETURNING *
       `),
       cancelTerminal: this.db.prepare(`
         UPDATE jobs

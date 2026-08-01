@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { SqliteStorage } from "../../src/storage/sqlite.js";
 import { sleep } from "../../src/util/sleep.js";
-import { hasSqlite, hasWorkerRuntime } from "../helpers/modules.js";
+import { WorkerRuntime } from "../../src/worker/worker.js";
 import { createTempDbPath } from "../helpers/temp-db.js";
 
-const ready = hasSqlite && hasWorkerRuntime;
 const JOB_COUNT = 20_000;
 const FAIL_RATE = 0.01;
 
-describe.skipIf(!ready)("torture: dual workers / 20k jobs", () => {
+describe("torture: dual workers / 20k jobs", () => {
   const cleanups: Array<() => void | Promise<void>> = [];
 
   afterEach(async () => {
@@ -17,9 +17,6 @@ describe.skipIf(!ready)("torture: dual workers / 20k jobs", () => {
   });
 
   it("completes or dead-letters every job with no lost or duplicated successes", async () => {
-    const { SqliteStorage } = await import("../../src/storage/sqlite.js");
-    const { WorkerRuntime } = await import("../../src/worker/worker.js");
-
     // File-backed so two runtimes share one durable queue (WAL).
     const tmp = createTempDbPath("vardiya-torture-");
     cleanups.push(tmp.cleanup);

@@ -1,24 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { hasMaintenanceLoop, hasSqlite } from "../helpers/modules.js";
+import { MaintenanceLoop, repeatOccurrenceJobId } from "../../src/scheduler/scheduler.js";
+import { SqliteStorage } from "../../src/storage/sqlite.js";
 import { createTempDbPath } from "../helpers/temp-db.js";
 
-type SqliteStorage = import("../../src/storage/sqlite.js").SqliteStorage;
-
-async function openMemory(): Promise<SqliteStorage> {
-  const { SqliteStorage } = await import("../../src/storage/sqlite.js");
+function openMemory(): SqliteStorage {
   const storage = new SqliteStorage(":memory:");
   storage.init();
   return storage;
 }
 
-async function openFile(path: string): Promise<SqliteStorage> {
-  const { SqliteStorage } = await import("../../src/storage/sqlite.js");
+function openFile(path: string): SqliteStorage {
   const storage = new SqliteStorage(path);
   storage.init();
   return storage;
 }
 
-describe.skipIf(!hasSqlite)("SqliteStorage integration", () => {
+describe("SqliteStorage integration", () => {
   const cleanups: Array<() => void> = [];
 
   afterEach(() => {
@@ -29,8 +26,8 @@ describe.skipIf(!hasSqlite)("SqliteStorage integration", () => {
   });
 
   describe("enqueue / claim / complete happy path", () => {
-    it("works on :memory:", async () => {
-      const storage = await openMemory();
+    it("works on :memory:", () => {
+      const storage = openMemory();
       cleanups.push(() => storage.close());
 
       const job = storage.enqueue({
@@ -58,11 +55,11 @@ describe.skipIf(!hasSqlite)("SqliteStorage integration", () => {
       });
     });
 
-    it("works on a temp file", async () => {
+    it("works on a temp file", () => {
       const tmp = createTempDbPath();
       cleanups.push(tmp.cleanup);
 
-      const storage = await openFile(tmp.path);
+      const storage = openFile(tmp.path);
       cleanups.push(() => storage.close());
 
       const job = storage.enqueue({
@@ -78,12 +75,12 @@ describe.skipIf(!hasSqlite)("SqliteStorage integration", () => {
   });
 
   describe("retry with exponential backoff", () => {
-    it("schedules delays as delayMs * 2^(attempt - 1)", async () => {
+    it("schedules delays as delayMs * 2^(attempt - 1)", () => {
       vi.useFakeTimers();
       const t0 = new Date("2024-06-01T12:00:00.000Z").getTime();
       vi.setSystemTime(t0);
 
-      const storage = await openMemory();
+      const storage = openMemory();
       cleanups.push(() => storage.close());
 
       const job = storage.enqueue({
@@ -124,8 +121,8 @@ describe.skipIf(!hasSqlite)("SqliteStorage integration", () => {
   });
 
   describe("dead letter after maxAttempts", () => {
-    it("moves to dead when attempts are exhausted", async () => {
-      const storage = await openMemory();
+    it("moves to dead when attempts are exhausted", () => {
+      const storage = openMemory();
       cleanups.push(() => storage.close());
 
       const job = storage.enqueue({
@@ -141,8 +138,8 @@ describe.skipIf(!hasSqlite)("SqliteStorage integration", () => {
       expect(storage.claimNext(["dlq"], Date.now())).toBeNull();
     });
 
-    it("moves to dead when retryable is false", async () => {
-      const storage = await openMemory();
+    it("moves to dead when retryable is false", () => {
+      const storage = openMemory();
       cleanups.push(() => storage.close());
 
       const job = storage.enqueue({
@@ -158,12 +155,12 @@ describe.skipIf(!hasSqlite)("SqliteStorage integration", () => {
   });
 
   describe("delayed job promotion", () => {
-    it("keeps future jobs unclaimable until promoteDelayed", async () => {
+    it("keeps future jobs unclaimable until promoteDelayed", () => {
       vi.useFakeTimers();
       const t0 = Date.UTC(2024, 0, 1, 0, 0, 0);
       vi.setSystemTime(t0);
 
-      const storage = await openMemory();
+      const storage = openMemory();
       cleanups.push(() => storage.close());
 
       const job = storage.enqueue({
@@ -187,8 +184,8 @@ describe.skipIf(!hasSqlite)("SqliteStorage integration", () => {
   });
 
   describe("priority ordering", () => {
-    it("claims higher priority first", async () => {
-      const storage = await openMemory();
+    it("claims higher priority first", () => {
+      const storage = openMemory();
       cleanups.push(() => storage.close());
       const now = Date.now();
 
@@ -218,8 +215,8 @@ describe.skipIf(!hasSqlite)("SqliteStorage integration", () => {
   });
 
   describe("jobId dedup", () => {
-    it("returns the existing job and does not insert a second row", async () => {
-      const storage = await openMemory();
+    it("returns the existing job and does not insert a second row", () => {
+      const storage = openMemory();
       cleanups.push(() => storage.close());
 
       const a = storage.enqueue({
@@ -242,12 +239,12 @@ describe.skipIf(!hasSqlite)("SqliteStorage integration", () => {
   });
 
   describe("stalled-job recovery", () => {
-    it("reclaims active jobs with a stale heartbeat", async () => {
+    it("reclaims active jobs with a stale heartbeat", () => {
       vi.useFakeTimers();
       const t0 = Date.UTC(2024, 0, 1, 0, 0, 0);
       vi.setSystemTime(t0);
 
-      const storage = await openMemory();
+      const storage = openMemory();
       cleanups.push(() => storage.close());
 
       const job = storage.enqueue({
@@ -272,18 +269,38 @@ describe.skipIf(!hasSqlite)("SqliteStorage integration", () => {
     });
   });
 
-  describe.skipIf(!hasMaintenanceLoop)("repeatable materialization idempotency", () => {
+  describe("release", () => {
+    it("returns an active job to pending without burning an attempt", () => {
+      const storage = openMemory();
+      cleanups.push(() => storage.close());
+
+      const job = storage.enqueue({
+        queue: "rel",
+        name: "n",
+        payload: {},
+        options: { maxAttempts: 3 },
+      });
+      expect(storage.claimNext(["rel"], Date.now())?.job.attempts).toBe(1);
+
+      const released = storage.release(job.id);
+      expect(released.status).toBe("pending");
+      expect(released.attempts).toBe(0);
+      expect(released.lastError).toBeUndefined();
+
+      const again = storage.claimNext(["rel"], Date.now());
+      expect(again?.job.id).toBe(job.id);
+      expect(again?.job.attempts).toBe(1);
+    });
+  });
+
+  describe("repeatable materialization idempotency", () => {
     it("does not create duplicate jobs for the same occurrence", async () => {
       vi.useFakeTimers();
       const t0 = Date.UTC(2024, 0, 1, 12, 0, 0);
       vi.setSystemTime(t0);
 
-      const storage = await openMemory();
+      const storage = openMemory();
       cleanups.push(() => storage.close());
-
-      const { MaintenanceLoop, repeatOccurrenceJobId } = await import(
-        "../../src/scheduler/scheduler.js"
-      );
 
       storage.upsertRepeatable({
         queue: "cron-q",

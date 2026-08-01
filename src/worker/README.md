@@ -14,8 +14,8 @@ Public pieces:
 - `AdaptivePoller` in `poller.ts` (busy/idle backoff)
 - `UnrecoverableError` for dead-letter without retry
 
-Wire this into the `Worker` stub in `src/vardiya.ts` later. Signatures there
-stay frozen.
+The public `Worker` class in `src/vardiya.ts` wraps `WorkerRuntime` and shares
+storage when created via `Vardiya.createWorker`.
 
 ## Lifecycle
 
@@ -86,9 +86,8 @@ not emit it.
    |                      | (loop abort)           | drain timeout
    |                      v                        v
    |                 stop claimNext          abort job signals
-   |                 finish current          release leftovers
-   |                 acquires                (see PROPOSED-CHANGE
-   |                                         Storage.release)
+   |                 finish current          Storage.release
+   |                 acquires                (no attempt burn)
    +------ (new WorkerRuntime) --------------+
 ```
 
@@ -97,8 +96,8 @@ not emit it.
 1. Flip state to `stopping` and abort the poll sleep so the loop exits.
 2. Wait up to `drainTimeoutMs` for in-flight handlers to finish.
 3. Abort any leftover job `AbortSignal`s.
-4. Release those jobs back toward pending (today via `fail` + `retryable` and
-   immediate `nextRunAt`; prefer a future `Storage.release`).
+4. Call `Storage.release` so those jobs return to pending without burning an
+   attempt or writing `lastError`.
 5. Emit `worker:stopped`.
 
 `installSignalHandlers()` is opt-in. It hooks SIGINT/SIGTERM to `stop()` and
@@ -114,17 +113,11 @@ side) can put the work back. After a crash mid-handler, the same job id may
 run again. Handlers must be safe to run twice, or they must enforce their own
 idempotency (for example with `EnqueueOptions.jobId` and side-effect checks).
 
-Exactly-once delivery across a crash boundary is a lie for this design. You
-would need distributed transactions between the queue and every side effect
-the handler touches. We do not pretend to have that. What you get instead:
+Exactly-once delivery across a crash boundary is not something this design
+claims. You would need distributed transactions between the queue and every
+side effect the handler touches. What you get instead:
 
 - Durable claim in SQLite
 - Heartbeats so live work is not reclaimed
 - Graceful drain on stop so clean shutdowns finish in-flight work
 - At-least-once redelivery when something dies hard
-
-Run the local proof with:
-
-```bash
-npx tsx src/worker/selfcheck.ts
-```

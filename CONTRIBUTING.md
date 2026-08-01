@@ -11,7 +11,7 @@ npm test
 npm run lint
 ```
 
-Node 18+ is required (`better-sqlite3` needs a working native build toolchain).
+Node 20+ is required (`better-sqlite3` needs a working native build toolchain).
 
 ## Where to put work
 
@@ -31,7 +31,7 @@ If the frozen contract is wrong, do not edit it in a drive-by PR. Add a `PROPOSE
 
 ## Tests
 
-`npm test` should stay green. Integration tests use `describe.skipIf` when a module file is missing so parallel work can land out of order. Prefer adding coverage next to the behavior you change.
+`npm test` should stay green. Prefer adding coverage next to the behavior you change. Suites that open storage or start workers must close them in `afterEach`.
 
 ## Pull requests
 

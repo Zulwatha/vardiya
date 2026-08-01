@@ -175,16 +175,21 @@ Run on your machine:
 npm run bench
 ```
 
-Sample from this machine (temp-file DB, noop handler, `bench/bench.ts`). Re-run locally before you quote numbers; disks and CPUs differ.
+Sample from this machine (temp-file DB, noop handler, `bench/bench.ts`):
+
+- CPU: 12th Gen Intel Core i9-12900K (24 logical cores)
+- RAM: 32 GB
+- OS: Windows 10.0.26200 (win32 x64)
+- Node: v24.13.0
 
 | Metric | Result |
 | --- | --- |
-| Enqueue throughput | 14,442 jobs/sec |
-| Process throughput (concurrency=1) | 5,857 jobs/sec |
-| Process throughput (concurrency=8) | 5,698 jobs/sec |
-| Process throughput (concurrency=32) | 6,057 jobs/sec |
+| Enqueue throughput | 13,740 jobs/sec |
+| Process throughput (concurrency=1) | 4,649 jobs/sec |
+| Process throughput (concurrency=8) | 5,272 jobs/sec |
+| Process throughput (concurrency=32) | 4,665 jobs/sec |
 
-_Measured with 20,000 enqueue ops and 10,000 end-to-end jobs on a temp-file SQLite DB._
+_Measured with 20,000 enqueue ops and 10,000 end-to-end jobs on a temp-file SQLite DB. Re-run locally before you quote numbers; disks and CPUs differ._
 
 ## Install
 
@@ -192,7 +197,7 @@ _Measured with 20,000 enqueue ops and 10,000 end-to-end jobs on a temp-file SQLi
 npm install vardiya
 ```
 
-Requires Node 18+. `better-sqlite3` is a native addon; you need a toolchain that can build it (or a prebuild for your platform).
+Requires Node 20+. `better-sqlite3` is a native addon; you need a toolchain that can build it (or a prebuild for your platform).
 
 ## License
 

@@ -1,9 +1,9 @@
 /**
  * Shared type contract for vardiya.
  *
- * This file is frozen. If you believe a change is required, add a comment
- * block starting with PROPOSED-CHANGE instead of editing the definitions.
- * Other agents build against these shapes in parallel.
+ * Treat this file as frozen for day-to-day work. If you believe a change is
+ * required, add a comment block starting with PROPOSED-CHANGE instead of
+ * editing the definitions. Lead merges contract changes deliberately.
  */
 
 /**
@@ -351,6 +351,24 @@ export interface Storage {
    * does not reclaim it.
    */
   heartbeat(id: string, now: number): void | Promise<void>;
+
+  /**
+   * Return active jobs whose heartbeat is older than `staleAfterMs` to
+   * `pending`. Attempts stay as they were after claim (the claim already
+   * counted). Returns how many rows were reclaimed.
+   *
+   * @param now - Current time as unix ms.
+   * @param staleAfterMs - Heartbeats older than `now - staleAfterMs` are stale.
+   */
+  reclaimStale(now: number, staleAfterMs: number): number | Promise<number>;
+
+  /**
+   * Return an active job to `pending` without counting a failure: clear
+   * heartbeat and cancel state, and undo the claim's attempt increment.
+   * Used on graceful worker shutdown so aborted leftovers do not burn retries
+   * or write `lastError`. Returns the updated job.
+   */
+  release(id: string): Job | Promise<Job>;
 
   /**
    * Cancel a job by id. Pending/delayed jobs become `dead`. Active jobs are

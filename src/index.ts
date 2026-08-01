@@ -5,7 +5,7 @@
  * Everything else is type-only so consumers get the frozen contract.
  */
 
-export { Vardiya, Worker } from "./vardiya.js";
+export { UnrecoverableError, Vardiya, Worker } from "./vardiya.js";
 export { createId, sleep, TypedEmitter } from "./util/index.js";
 
 export type {

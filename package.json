@@ -20,9 +20,9 @@
       }
     }
   },
-  "files": ["dist"],
+  "files": ["dist", "CHANGELOG.md"],
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "scripts": {
     "build": "tsup",
@@ -38,6 +38,7 @@
     "@biomejs/biome": "^1.9.4",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.13.4",
+    "tsx": "^4.19.2",
     "tsup": "^8.3.6",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
@@ -45,6 +46,6 @@
   "keywords": ["job-queue", "sqlite", "background-jobs", "worker", "scheduler", "bullmq"],
   "repository": {
     "type": "git",
-    "url": "https://github.com/example/vardiya.git"
+    "url": "https://github.com/Zulwatha/vardiya.git"
   }
 }

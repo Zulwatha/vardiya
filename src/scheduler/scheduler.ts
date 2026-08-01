@@ -1,22 +1,10 @@
 import type { EnqueueOptions, RepeatableJob, Storage } from "../types.js";
 import { nextRun, parseCron } from "./cron.js";
 
-/*
- * PROPOSED-CHANGE:
- * What: add Storage.reclaimStale(now, staleAfterMs)
- * Why: MaintenanceLoop must reclaim active jobs whose heartbeat went stale
- *      when a worker dies mid-job. Storage already plans this UPDATE; it is
- *      missing from the frozen Storage interface.
- * Suggested shape: reclaimStale(now: number, staleAfterMs: number): number | Promise<number>
- */
-
 /**
- * Storage surface the maintenance loop needs.
- * Identical to {@link Storage} plus stalled-job reclaim (proposed above).
+ * Storage surface the maintenance loop needs. Same as {@link Storage}.
  */
-export type SchedulerStorage = Storage & {
-  reclaimStale(now: number, staleAfterMs: number): number | Promise<number>;
-};
+export type SchedulerStorage = Storage;
 
 /**
  * Configuration for {@link MaintenanceLoop}.
@@ -52,6 +40,10 @@ export interface MaintenanceLoopOptions {
    * Clock injection for tests. Defaults to Date.now.
    */
   now?: () => number;
+  /**
+   * Called when a background tick throws. Tick errors never kill the interval.
+   */
+  onError?: (error: Error) => void;
 }
 
 const DEFAULTS = {
@@ -86,7 +78,7 @@ export function repeatOccurrenceJobId(queue: string, key: string, scheduledAtMs:
  * 3. Materialize due repeatables into concrete jobs (deduped by job id).
  * 4. Optionally clean up old completed/dead jobs.
  *
- * Depends only on the {@link Storage} interface (plus proposed reclaimStale).
+ * Depends only on the {@link Storage} interface.
  * Never imports a concrete storage or worker implementation.
  */
 export class MaintenanceLoop {
@@ -97,6 +89,7 @@ export class MaintenanceLoop {
   private readonly cleanupEveryTicks: number;
   private readonly maxCatchUpPerRepeatable: number;
   private readonly now: () => number;
+  private readonly onError: ((error: Error) => void) | undefined;
 
   private timer: ReturnType<typeof setInterval> | undefined;
   private tickInFlight = false;
@@ -112,6 +105,7 @@ export class MaintenanceLoop {
     this.maxCatchUpPerRepeatable =
       options.maxCatchUpPerRepeatable ?? DEFAULTS.maxCatchUpPerRepeatable;
     this.now = options.now ?? Date.now;
+    this.onError = options.onError;
   }
 
   /** Whether {@link start} has been called and {@link stop} has not. */
@@ -150,6 +144,18 @@ export class MaintenanceLoop {
   }
 
   /**
+   * Resolve once any in-flight tick finishes. Call after {@link stop} before
+   * closing storage so the process can exit cleanly.
+   */
+  async waitForIdle(): Promise<void> {
+    while (this.tickInFlight) {
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 5);
+      });
+    }
+  }
+
+  /**
    * Run one maintenance cycle. Safe to call from tests without {@link start}.
    * Overlapping calls are skipped (returns zeros) so ticks never pile up.
    */
@@ -183,9 +189,15 @@ export class MaintenanceLoop {
   private async safeTick(): Promise<void> {
     try {
       await this.tick();
-    } catch {
-      // Tick errors must not kill the interval. The public facade can wrap
-      // tick() and forward failures onto the Vardiya `error` event if desired.
+    } catch (err) {
+      // Tick errors must not kill the interval.
+      const error =
+        err instanceof Error ? err : new Error("Maintenance tick failed", { cause: err });
+      try {
+        this.onError?.(error);
+      } catch {
+        // Listener errors must not kill the interval either.
+      }
     }
   }
 

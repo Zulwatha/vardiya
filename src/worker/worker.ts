@@ -202,6 +202,10 @@ export class WorkerRuntime extends TypedEmitter<VardiyaEvents> {
   /**
    * Stop claiming, wait for in-flight jobs up to `drainTimeoutMs`, then abort
    * leftovers and release them back toward pending.
+   *
+   * Drain and abort run before awaiting the claim loop. The loop may be
+   * blocked on the concurrency semaphore; aborting leftovers frees permits so
+   * the loop can observe `stopping` and exit.
    */
   async stop(): Promise<void> {
     if (this.#state === "idle" || this.#state === "stopped") {
@@ -216,8 +220,6 @@ export class WorkerRuntime extends TypedEmitter<VardiyaEvents> {
     this.#state = "stopping";
     this.#loopAbort?.abort();
 
-    await this.#loopPromise;
-
     await this.#waitForDrain(this.#options.drainTimeoutMs);
 
     // Force-abort anything still running past the drain window.
@@ -225,8 +227,10 @@ export class WorkerRuntime extends TypedEmitter<VardiyaEvents> {
       controller.abort();
     }
 
-    // Give aborted handlers a moment to settle into fail/release.
+    // Give aborted handlers a moment to settle into release/fail.
     await this.#waitForDrain(this.#options.drainTimeoutMs);
+
+    await this.#loopPromise;
 
     this.#uninstallSignalHandlers();
     this.#state = "stopped";
@@ -490,21 +494,9 @@ export class WorkerRuntime extends TypedEmitter<VardiyaEvents> {
     }
   }
 
-  /*
-   * PROPOSED-CHANGE:
-   * What: add Storage.release(id: string): Job | Promise<Job>
-   * Why: graceful shutdown should return aborted in-flight jobs to pending
-   *      without burning an attempt or writing lastError
-   * Suggested shape: release(id: string): Job | Promise<Job>
-   */
-  /** Interim release path until Storage.release exists. */
+  /** Return an aborted in-flight job to pending without burning an attempt. */
   async #releaseToPending(job: Job): Promise<void> {
-    await this.#storage.fail({
-      id: job.id,
-      error: "released by worker shutdown",
-      retryable: true,
-      nextRunAt: Date.now(),
-    });
+    await this.#storage.release(job.id);
   }
 
   async #safeHeartbeat(id: string): Promise<void> {
