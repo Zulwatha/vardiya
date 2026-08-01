@@ -1,6 +1,11 @@
+import { unrefTimer } from "./timer.js";
+
 /**
  * Resolve after `ms` milliseconds. Pass an AbortSignal to cancel early;
  * rejection is an `AbortError` DOMException (or Error with name AbortError).
+ *
+ * The underlying timer is unref'd so an idle sleep alone cannot pin the
+ * event loop after the caller has stopped owning work.
  */
 export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) {
@@ -12,6 +17,7 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       signal?.removeEventListener("abort", onAbort);
       resolve();
     }, ms);
+    unrefTimer(timer);
 
     const onAbort = () => {
       clearTimeout(timer);

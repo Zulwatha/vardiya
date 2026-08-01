@@ -55,6 +55,7 @@ export class Vardiya extends TypedEmitter<VardiyaEvents> {
   #workers: Worker[] = [];
   #embeddedWorker: Worker | undefined;
   #embeddedStartScheduled = false;
+  #embeddedStartPromise: Promise<void> | undefined;
 
   constructor(options: VardiyaOptions) {
     super();
@@ -85,6 +86,14 @@ export class Vardiya extends TypedEmitter<VardiyaEvents> {
    * Close storage and stop any resources owned by this client.
    */
   async close(): Promise<void> {
+    // Drain any queued embedded start before tearing workers down so we do
+    // not leave a fire-and-forget start() racing past close().
+    if (this.#embeddedStartPromise) {
+      await this.#embeddedStartPromise;
+      this.#embeddedStartPromise = undefined;
+    }
+    this.#embeddedStartScheduled = false;
+
     this.#maintenance?.stop();
     if (this.#maintenance) {
       await this.#maintenance.waitForIdle();
@@ -93,7 +102,6 @@ export class Vardiya extends TypedEmitter<VardiyaEvents> {
 
     const workers = this.#workers.splice(0, this.#workers.length);
     this.#embeddedWorker = undefined;
-    this.#embeddedStartScheduled = false;
     for (const worker of workers) {
       await worker.stop();
     }
@@ -153,13 +161,20 @@ export class Vardiya extends TypedEmitter<VardiyaEvents> {
     if (!this.#embeddedStartScheduled) {
       this.#embeddedStartScheduled = true;
       const worker = this.#embeddedWorker;
-      queueMicrotask(() => {
-        void worker.start().catch((err: unknown) => {
-          const error =
-            err instanceof Error
-              ? err
-              : new Error("Embedded worker failed to start", { cause: err });
-          this.emit("error", error);
+      this.#embeddedStartPromise = new Promise<void>((resolve) => {
+        queueMicrotask(() => {
+          void worker
+            .start()
+            .catch((err: unknown) => {
+              const error =
+                err instanceof Error
+                  ? err
+                  : new Error("Embedded worker failed to start", { cause: err });
+              this.emit("error", error);
+            })
+            .finally(() => {
+              resolve();
+            });
         });
       });
     }

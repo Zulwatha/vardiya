@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { SqliteStorage } from "../../src/storage/sqlite.js";
 import { sleep } from "../../src/util/sleep.js";
 import { WorkerRuntime } from "../../src/worker/worker.js";
+import { runCleanups } from "../helpers/cleanup.js";
 import { createTempDbPath } from "../helpers/temp-db.js";
 
 const JOB_COUNT = 20_000;
@@ -11,19 +12,15 @@ describe("torture: dual workers / 20k jobs", () => {
   const cleanups: Array<() => void | Promise<void>> = [];
 
   afterEach(async () => {
-    while (cleanups.length > 0) {
-      await cleanups.pop()?.();
-    }
+    await runCleanups(cleanups);
   });
 
   it("completes or dead-letters every job with no lost or duplicated successes", async () => {
     // File-backed so two runtimes share one durable queue (WAL).
     const tmp = createTempDbPath("vardiya-torture-");
-    cleanups.push(tmp.cleanup);
 
     const storage = new SqliteStorage(tmp.path);
     storage.init();
-    cleanups.push(() => storage.close());
 
     const succeeded = new Set<string>();
     const duplicates: string[] = [];
@@ -54,6 +51,9 @@ describe("torture: dual workers / 20k jobs", () => {
 
     const w1 = makeWorker();
     const w2 = makeWorker();
+    // LIFO: stop workers, close storage, then remove the temp dir.
+    cleanups.push(tmp.cleanup);
+    cleanups.push(() => storage.close());
     cleanups.push(() => w1.stop());
     cleanups.push(() => w2.stop());
 

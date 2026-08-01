@@ -1,4 +1,5 @@
 import type { EnqueueOptions, RepeatableJob, Storage } from "../types.js";
+import { unrefTimer } from "../util/timer.js";
 import { nextRun, parseCron } from "./cron.js";
 
 /**
@@ -126,9 +127,7 @@ export class MaintenanceLoop {
       void this.safeTick();
     }, this.intervalMs);
     // Allow the process to exit naturally while the loop is the only waiter.
-    if (typeof this.timer === "object" && "unref" in this.timer) {
-      this.timer.unref();
-    }
+    unrefTimer(this.timer);
   }
 
   /**
@@ -150,7 +149,8 @@ export class MaintenanceLoop {
   async waitForIdle(): Promise<void> {
     while (this.tickInFlight) {
       await new Promise<void>((resolve) => {
-        setTimeout(resolve, 5);
+        const timer = setTimeout(resolve, 5);
+        unrefTimer(timer);
       });
     }
   }

@@ -1,6 +1,7 @@
 import type { Handler, Job, JobContext, Storage, VardiyaEvents, WorkerOptions } from "../types.js";
 import { TypedEmitter } from "../util/emitter.js";
 import { sleep } from "../util/sleep.js";
+import { unrefTimer } from "../util/timer.js";
 import { AdaptivePoller } from "./poller.js";
 import { Semaphore } from "./semaphore.js";
 
@@ -333,6 +334,7 @@ export class WorkerRuntime extends TypedEmitter<VardiyaEvents> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<void>((resolve) => {
       timer = setTimeout(resolve, timeoutMs);
+      unrefTimer(timer);
     });
 
     try {
@@ -358,6 +360,7 @@ export class WorkerRuntime extends TypedEmitter<VardiyaEvents> {
         timedOut = true;
         controller.abort();
       }, timeoutMs);
+      unrefTimer(timeoutTimer);
     }
 
     // Latch abort if stop already raced past us. Later stop() aborts via
@@ -369,6 +372,7 @@ export class WorkerRuntime extends TypedEmitter<VardiyaEvents> {
     const heartbeatTimer = setInterval(() => {
       void this.#safeHeartbeat(job.id);
     }, this.#options.heartbeatIntervalMs);
+    unrefTimer(heartbeatTimer);
 
     const ctx: JobContext = {
       signal: controller.signal,

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MaintenanceLoop, repeatOccurrenceJobId } from "../../src/scheduler/scheduler.js";
 import { SqliteStorage } from "../../src/storage/sqlite.js";
+import { runCleanups } from "../helpers/cleanup.js";
 import { createTempDbPath } from "../helpers/temp-db.js";
 
 function openMemory(): SqliteStorage {
@@ -16,13 +17,11 @@ function openFile(path: string): SqliteStorage {
 }
 
 describe("SqliteStorage integration", () => {
-  const cleanups: Array<() => void> = [];
+  const cleanups: Array<() => void | Promise<void>> = [];
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.useRealTimers();
-    while (cleanups.length > 0) {
-      cleanups.pop()?.();
-    }
+    await runCleanups(cleanups);
   });
 
   describe("enqueue / claim / complete happy path", () => {
@@ -315,6 +314,10 @@ describe("SqliteStorage integration", () => {
       const loop = new MaintenanceLoop(storage, {
         now: () => Date.now(),
         stalledTimeoutMs: 60_000,
+      });
+      cleanups.push(async () => {
+        loop.stop();
+        await loop.waitForIdle();
       });
 
       const r1 = await loop.tick();

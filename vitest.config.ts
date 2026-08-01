@@ -11,14 +11,16 @@ export default defineConfig({
     pool: "forks",
     poolOptions: {
       forks: {
-        // One file per fork keeps native module state isolated and lets each
-        // worker process exit after its afterEach cleanup closes DB handles.
+        // Serialize forks so a slow Node 20 teardown cannot race IPC against
+        // a sibling worker. Keep singleFork false so each file still gets a
+        // fresh process (native module + SQLite handle isolation).
         singleFork: false,
+        maxForks: 1,
       },
     },
-    // Give torture / dual-worker suites room; per-test timeouts still apply.
+    // Give torture / dual-worker suites and fork exit room on slower Nodes.
     hookTimeout: 60_000,
-    teardownTimeout: 30_000,
+    teardownTimeout: 60_000,
     benchmark: {
       include: ["bench/**/*.bench.ts"],
     },

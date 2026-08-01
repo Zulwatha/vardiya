@@ -2,20 +2,18 @@ import { afterEach, describe, expect, it } from "vitest";
 import { SqliteStorage } from "../../src/storage/sqlite.js";
 import { sleep } from "../../src/util/sleep.js";
 import { WorkerRuntime } from "../../src/worker/worker.js";
+import { runCleanups } from "../helpers/cleanup.js";
 
 describe("WorkerRuntime graceful shutdown", () => {
   const cleanups: Array<() => void | Promise<void>> = [];
 
   afterEach(async () => {
-    while (cleanups.length > 0) {
-      await cleanups.pop()?.();
-    }
+    await runCleanups(cleanups);
   });
 
   it("drains in-flight jobs and leaves no active rows", async () => {
     const storage = new SqliteStorage(":memory:");
     storage.init();
-    cleanups.push(() => storage.close());
 
     const worker = new WorkerRuntime(storage, {
       concurrency: 2,
@@ -24,6 +22,8 @@ describe("WorkerRuntime graceful shutdown", () => {
       drainTimeoutMs: 3_000,
       heartbeatIntervalMs: 100,
     });
+    // LIFO: stop worker before closing storage.
+    cleanups.push(() => storage.close());
     cleanups.push(() => worker.stop());
 
     let started = 0;
@@ -60,7 +60,6 @@ describe("WorkerRuntime graceful shutdown", () => {
   it("releases aborted leftovers without burning an attempt", async () => {
     const storage = new SqliteStorage(":memory:");
     storage.init();
-    cleanups.push(() => storage.close());
 
     const worker = new WorkerRuntime(storage, {
       concurrency: 1,
@@ -69,6 +68,7 @@ describe("WorkerRuntime graceful shutdown", () => {
       drainTimeoutMs: 30,
       heartbeatIntervalMs: 100,
     });
+    cleanups.push(() => storage.close());
     cleanups.push(() => worker.stop());
 
     worker.process("block", async (_job, ctx) => {
