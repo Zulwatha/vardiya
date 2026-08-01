@@ -11,7 +11,7 @@ npm test
 npm run lint
 ```
 
-Node 20+ is required (`better-sqlite3` needs a working native build toolchain).
+Node >=22 is required (`better-sqlite3` needs a working native build toolchain). CI runs on Node 22 and 24.
 
 ## Where to put work
 

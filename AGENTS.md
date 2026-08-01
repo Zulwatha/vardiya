@@ -33,7 +33,7 @@ The lead merges contract changes deliberately so parallel work does not break.
 
 ## Stack reminders
 
-- Node >= 20, TypeScript strict, dual ESM+CJS via tsup.
+- Node >= 22, TypeScript strict, dual ESM+CJS via tsup.
 - Runtime dependency: `better-sqlite3` only. Cron, backoff, and ids are in-house.
 - Lint/format with biome. Tests with vitest.
 - `npm run build`, `npm run lint`, and `npm test` should stay green.

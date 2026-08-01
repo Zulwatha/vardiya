@@ -197,7 +197,7 @@ _Measured with 20,000 enqueue ops and 10,000 end-to-end jobs on a temp-file SQLi
 npm install vardiya
 ```
 
-Requires Node 20+. `better-sqlite3` is a native addon; you need a toolchain that can build it (or a prebuild for your platform).
+Requires Node >=22. CI tests on Node 22 and 24. `better-sqlite3` is a native addon; you need a toolchain that can build it (or a prebuild for your platform).
 
 ## License
 

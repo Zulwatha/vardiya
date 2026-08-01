@@ -23,4 +23,4 @@ runtime dependency (`better-sqlite3`).
 
 ### Requirements
 
-- Node.js 20 or newer
+- Node.js 22 or newer
