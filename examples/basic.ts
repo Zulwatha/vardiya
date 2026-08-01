@@ -1,13 +1,13 @@
 /**
- * Minimal enqueue + worker example.
+ * Minimal enqueue + worker example against the built package.
  *
- * Run: npx tsx examples/basic.ts
+ * Run: npm run build && npx tsx examples/basic.ts
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Vardiya } from "../src/vardiya.js";
+import { Vardiya } from "../dist/index.js";
 
 const dir = mkdtempSync(join(tmpdir(), "vardiya-example-basic-"));
 const databasePath = join(dir, "jobs.sqlite");

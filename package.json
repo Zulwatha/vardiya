@@ -1,9 +1,9 @@
 {
   "name": "vardiya",
   "version": "0.1.0",
-  "description": "A SQLite-backed job queue for Node.js. Durable background jobs with zero infrastructure beyond a single SQLite file.",
+  "description": "SQLite-backed job queue for Node.js. Durable background jobs, retries, priorities and cron scheduling with zero infrastructure. No Redis.",
   "license": "MIT",
-  "author": "",
+  "author": "Zulwatha",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -20,7 +20,7 @@
       }
     }
   },
-  "files": ["dist", "CHANGELOG.md"],
+  "files": ["dist", "README.md", "CHANGELOG.md", "LICENSE"],
   "engines": {
     "node": ">=22"
   },
@@ -43,9 +43,25 @@
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
   },
-  "keywords": ["job-queue", "sqlite", "background-jobs", "worker", "scheduler", "bullmq"],
+  "keywords": [
+    "job-queue",
+    "queue",
+    "sqlite",
+    "better-sqlite3",
+    "background-jobs",
+    "worker",
+    "cron",
+    "scheduler",
+    "task-queue",
+    "delayed-jobs",
+    "bullmq-alternative"
+  ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/Zulwatha/vardiya.git"
-  }
+    "url": "git+https://github.com/Zulwatha/vardiya.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Zulwatha/vardiya/issues"
+  },
+  "homepage": "https://github.com/Zulwatha/vardiya#readme"
 }
