@@ -1,7 +1,13 @@
 # storage
 
-Owned by Agent A.
+SQLite persistence for vardiya. Owns schema, migrations, and the `Storage` implementation in `sqlite.ts`.
 
-This module owns the SQLite persistence layer behind the `Storage` interface in `src/types.ts`. That means opening the database file, migrations, atomic `claimNext`, enqueue/complete/fail paths, delayed promotion, repeatable upserts, heartbeats, cancel, counts, and cleanup.
+We use WAL so readers (counts, getJob) do not block writers and writers do not block readers. SQLite still allows only one writer at a time; under contention `busy_timeout` waits, then we retry once on `SQLITE_BUSY`.
 
-Do not change `src/types.ts`. If the contract is missing something you need, add a `PROPOSED-CHANGE` comment block in your PR description or next to the call site, and keep your local code compiling against the frozen types.
+`claimNext` is a single `UPDATE ... WHERE id = (SELECT ... LIMIT 1) RETURNING *`. That beats SELECT-then-UPDATE: two workers cannot both observe the same pending row and both mark it active. The subquery picks the winner under the write lock; losers see zero rows.
+
+better-sqlite3 is sync. These statements are short; async wrappers would add Promise overhead without unblocking the event loop during the native call. Yield between claims if you share one thread.
+
+Expect on the order of tens of thousands of claim/enqueue ops per second on a local SSD for small payloads, less under heavy multi-process write contention. Not a distributed broker: one file, one writer lane.
+
+Do not edit `src/types.ts`. Extra methods like `reclaimStale` carry a `PROPOSED-CHANGE` note until the lead merges them into the contract.

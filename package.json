@@ -20,9 +20,7 @@
       }
     }
   },
-  "files": [
-    "dist"
-  ],
+  "files": ["dist"],
   "engines": {
     "node": ">=18"
   },
@@ -31,7 +29,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "biome check .",
-    "bench": "vitest bench --run"
+    "bench": "vite-node bench/bench.ts"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.2"
@@ -44,14 +42,7 @@
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
   },
-  "keywords": [
-    "job-queue",
-    "sqlite",
-    "background-jobs",
-    "worker",
-    "scheduler",
-    "bullmq"
-  ],
+  "keywords": ["job-queue", "sqlite", "background-jobs", "worker", "scheduler", "bullmq"],
   "repository": {
     "type": "git",
     "url": "https://github.com/example/vardiya.git"

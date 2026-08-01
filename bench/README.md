@@ -2,4 +2,8 @@
 
 Owned by Agent D.
 
-Benchmark suites for vitest (`*.bench.ts`). Measure enqueue/claim throughput and other hot paths once storage and worker exist. The `npm run bench` script runs these.
+`bench.ts` measures enqueue throughput and end-to-end process throughput at concurrency 1 / 8 / 32 on a temp-file SQLite database. It prints a markdown table (no external bench deps).
+
+```bash
+npm run bench
+```

@@ -2,4 +2,6 @@
 
 Owned by Agent D.
 
-Unit and integration tests live here. At the foundation stage only `test/util/` is filled in. Add storage, worker, and scheduler coverage as those modules land. Prefer vitest. Keep fixtures local to this tree.
+Vitest suites live here. Unit tests cover cron, backoff, ids, and the semaphore. Integration tests hit real `SqliteStorage` (`:memory:` and temp files) plus `WorkerRuntime` / `MaintenanceLoop`. The torture suite runs two workers over 20k jobs.
+
+When an implementation file is missing, suites use `describe.skipIf` keyed on `test/helpers/modules.ts` so `npm test` stays green while other agents land code.

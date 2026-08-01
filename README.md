@@ -1,0 +1,199 @@
+<!-- logo placeholder: docs/logo.svg -->
+
+# vardiya
+
+SQLite-backed job queue for Node.js. No Redis. No drama.
+
+[![CI](https://github.com/Zulwatha/vardiya/actions/workflows/ci.yml/badge.svg)](https://github.com/Zulwatha/vardiya/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/vardiya.svg)](https://www.npmjs.com/package/vardiya)
+[![license](https://img.shields.io/npm/l/vardiya.svg)](./LICENSE)
+
+One runtime dependency (`better-sqlite3`). Cron, backoff, and ids are in-house. If your app already lives on a single VPS and you do not want to run Redis just to send email later, this is the library I would reach for.
+
+## Quick start
+
+```ts
+import { Vardiya } from "vardiya";
+
+const v = new Vardiya({ databasePath: "./jobs.sqlite" });
+await v.init();
+
+await v.enqueue("email", { to: "a@b.com" }, { delayMs: 5_000 });
+await v.upsertRepeatable({
+  name: "report",
+  cron: "0 9 * * MON-FRI",
+  key: "weekday-report",
+  payload: { type: "daily" },
+});
+
+const worker = v.createWorker({ concurrency: 4 });
+worker.process("email", async (job) => sendEmail(job.payload));
+worker.process("report", async () => buildReport());
+await worker.start();
+
+// later: await v.close();
+```
+
+## Why vardiya
+
+Most Node job queues assume a broker. That is the right call when you have many producers across many hosts. It is overkill when you have one Node process (or a handful) and a disk.
+
+vardiya keeps the queue in a SQLite file: WAL mode, atomic claim via a single `UPDATE ... RETURNING`, retries with backoff, delayed jobs, priorities, repeatable cron, stalled-job reclaim. You open a path, enqueue work, run a worker. When the process dies, the file is still there.
+
+### Comparison
+
+| | vardiya | BullMQ | pg-boss | bee-queue |
+| --- | --- | --- | --- | --- |
+| Broker required | No (SQLite file) | Redis | Postgres | Redis |
+| Persistence | SQLite file | Redis (AOF/RDB) | Postgres | Redis |
+| Repeatable jobs | Yes (5-field cron) | Yes | Yes | Limited / DIY |
+| Priorities | Yes | Yes | Yes | Yes |
+| Delivery guarantee | At-least-once | At-least-once | At-least-once | At-least-once |
+| Runtime deps count | 1 (`better-sqlite3`) | Redis client + extras | `pg` | Redis client |
+
+Numbers above are about the usual install story, not a dependency audit of every transitive package. The point is the ops surface: vardiya asks for a file path; the others ask for a server.
+
+## Features
+
+- Durable jobs in one SQLite database (file or `:memory:` for tests)
+- Atomic claim safe for multiple worker processes on the same file
+- Delays, priorities, custom `jobId` dedup
+- Retries with fixed or exponential backoff (optional jitter)
+- Dead letter when `maxAttempts` is exhausted
+- Repeatable schedules via 5-field cron (plus `@hourly` / `@daily` / `@weekly` / `@monthly`)
+- Heartbeats and stalled-job reclaim
+- Graceful worker shutdown with drain timeout
+- Typed events: `job:added`, `job:active`, `job:completed`, `job:failed`, `job:dead`, `worker:started`, `worker:stopped`, `error`
+
+## API reference
+
+### `new Vardiya(options)`
+
+```ts
+interface VardiyaOptions {
+  databasePath: string;       // file path or ":memory:"
+  defaultQueue?: string;      // default "default"
+  defaultMaxAttempts?: number;
+  defaultBackoff?: BackoffOptions;
+}
+```
+
+Call `await v.init()` before anything else. Call `await v.close()` on shutdown.
+
+### Enqueue
+
+```ts
+await v.enqueue(name, payload, {
+  queue?: string;
+  priority?: number;          // higher runs first, default 0
+  delayMs?: number;           // mutually exclusive with runAt; runAt wins if both set
+  runAt?: number;             // unix ms
+  maxAttempts?: number;       // default 1
+  backoff?: BackoffOptions;
+  jobId?: string;             // idempotency key within the queue
+  repeat?: { cron: string; key: string };
+});
+```
+
+`BackoffOptions`: `{ type: "fixed" | "exponential", delayMs, maxDelayMs?, jitter? }`.
+Exponential delay is `delayMs * 2^(attempt - 1)`, capped by `maxDelayMs`. With `jitter: true`, the wait is a uniform pick in `[0, delay]`.
+
+### Workers
+
+```ts
+const worker = v.createWorker({
+  concurrency?: number;       // default 1
+  pollIntervalMs?: number;
+  queues?: string[];          // omit to claim from all queues
+});
+
+worker.process(name, async (job, ctx) => {
+  // ctx.signal: aborted on shutdown / timeout
+  // ctx.touch(): refresh heartbeat during long work
+  // ctx.log(msg): structured log hook
+  return result;
+});
+
+await worker.start();
+await worker.stop();
+```
+
+You can also `v.process(name, handler)` for an embedded worker on the client.
+
+### Repeatables, inspection, cleanup
+
+```ts
+await v.upsertRepeatable({
+  queue?: string;
+  name: string;
+  cron: string;
+  key: string;
+  payload?: unknown;
+  options?: Omit<EnqueueOptions, "repeat" | "delayMs" | "runAt" | "jobId">;
+});
+
+await v.listRepeatables(queue?);
+await v.getJob(id);
+await v.cancel(id);
+await v.counts(queue?);           // { pending, active, completed, failed, delayed, dead }
+await v.cleanup(olderThanMs);     // deletes old completed/dead rows
+```
+
+### Events
+
+`Vardiya` and `Worker` extend a typed emitter:
+
+```ts
+v.on("job:completed", (job, result) => { /* ... */ });
+v.on("job:failed", (job, err) => { /* ... */ });
+v.on("job:dead", (job, err) => { /* ... */ });
+v.on("error", (err) => { /* ... */ });
+```
+
+## Delivery guarantees
+
+vardiya is **at-least-once**. A job can run more than once if a worker dies after doing the work but before `complete` is recorded, or if stall reclaim races a slow handler. That is the honest model for a crash-safe queue. Exactly-once is a marketing word unless you also design the side effects carefully.
+
+Practical advice:
+
+1. Prefer idempotent handlers. Use `job.id` or a business key as a dedup token in your own DB.
+2. Pass `jobId` on enqueue when the producer might retry (HTTP handler doubles, etc.).
+3. Call `ctx.touch()` (or rely on the automatic heartbeat) for long jobs so stall reclaim does not steal them mid-flight.
+4. Use `maxAttempts` and dead letter for poison messages; do not retry forever into a bad payload.
+
+## When NOT to use this
+
+If you need many app servers claiming from one logical queue across machines, use Redis or Postgres (BullMQ, pg-boss, and friends). SQLite is a single-writer database. Multiple processes on one host sharing a file over a local disk can work; a fleet of hosts fighting over a network SQLite mount will not.
+
+Also skip vardiya if you need rich dashboard UI, rate-limit groups, or sandboxed job processors out of the box. Those are product features other queues spent years on. This library is the durable queue core, not an ops platform.
+
+## Benchmarks
+
+Run on your machine:
+
+```bash
+npm run bench
+```
+
+Sample from this machine (temp-file DB, noop handler, `bench/bench.ts`). Re-run locally before you quote numbers; disks and CPUs differ.
+
+| Metric | Result |
+| --- | --- |
+| Enqueue throughput | 14,442 jobs/sec |
+| Process throughput (concurrency=1) | 5,857 jobs/sec |
+| Process throughput (concurrency=8) | 5,698 jobs/sec |
+| Process throughput (concurrency=32) | 6,057 jobs/sec |
+
+_Measured with 20,000 enqueue ops and 10,000 end-to-end jobs on a temp-file SQLite DB._
+
+## Install
+
+```bash
+npm install vardiya
+```
+
+Requires Node 18+. `better-sqlite3` is a native addon; you need a toolchain that can build it (or a prebuild for your platform).
+
+## License
+
+MIT
