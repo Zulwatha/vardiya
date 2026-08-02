@@ -28,8 +28,10 @@ await v.enqueue("email", { to: "a@b.com" }, { delayMs: 5_000 });
 const worker = v.createWorker({ concurrency: 4 });
 worker.process("email", async (job) => sendEmail(job.payload));
 await worker.start();
+// A running worker keeps the Node process alive (idle poll sleeps are unref'd
+// on purpose). Call worker.stop() / v.close() when you want the process to exit.
 
-// later: await v.close();
+// later: await worker.stop(); await v.close();
 ```
 
 ## Why vardiya

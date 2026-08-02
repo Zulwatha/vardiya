@@ -17,6 +17,10 @@ Public pieces:
 The public `Worker` class in `src/vardiya.ts` wraps `WorkerRuntime` and shares
 storage when created via `Vardiya.createWorker`.
 
+While `running`, the runtime holds one ref'd keep-alive timer so a process that
+only starts a worker does not exit (claim idle sleeps and heartbeats are
+unref'd). `stop()` clears it. MaintenanceLoop timers stay unref'd.
+
 ## Lifecycle
 
 ```

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1 - 2026-08-02
+
+### Fixed
+
+- A running worker keeps the process alive. Idle poll sleeps and heartbeats stay
+  unref'd, but `WorkerRuntime` holds one ref'd keep-alive timer until `stop()`
+  so dedicated worker scripts no longer exit before the first claim.
+
 ## 0.2.0 - 2026-08-02
 
 ### Breaking

@@ -99,6 +99,12 @@ export class WorkerRuntime extends TypedEmitter<VardiyaEvents> {
   readonly #inFlight = new Set<Promise<void>>();
   readonly #jobControllers = new Map<string, AbortController>();
   #signalDisposer: (() => void) | undefined;
+  /**
+   * Ref'd timer that pins the event loop while running. Claim idle sleeps and
+   * heartbeats are unref'd; without this, a dedicated worker script exits
+   * immediately with an empty loop.
+   */
+  #keepAlive: ReturnType<typeof setInterval> | undefined;
 
   constructor(storage: Storage, options: WorkerRuntimeOptions = {}) {
     super();
@@ -194,6 +200,7 @@ export class WorkerRuntime extends TypedEmitter<VardiyaEvents> {
     }
 
     this.#state = "running";
+    this.#armKeepAlive();
     this.#loopAbort = new AbortController();
     this.#poller.reset();
     this.#loopPromise = this.#runLoop(this.#loopAbort.signal);
@@ -210,6 +217,7 @@ export class WorkerRuntime extends TypedEmitter<VardiyaEvents> {
    */
   async stop(): Promise<void> {
     if (this.#state === "idle" || this.#state === "stopped") {
+      this.#clearKeepAlive();
       this.#state = "stopped";
       return;
     }
@@ -219,6 +227,7 @@ export class WorkerRuntime extends TypedEmitter<VardiyaEvents> {
     }
 
     this.#state = "stopping";
+    this.#clearKeepAlive();
     this.#loopAbort?.abort();
 
     await this.#waitForDrain(this.#options.drainTimeoutMs);
@@ -316,6 +325,22 @@ export class WorkerRuntime extends TypedEmitter<VardiyaEvents> {
       await sleep(waitMs, signal);
     } catch {
       // Aborted by stop(); loop exits on next condition check.
+    }
+  }
+
+  /** Pin the event loop for the lifetime of the running claim loop. */
+  #armKeepAlive(): void {
+    this.#clearKeepAlive();
+    // Intentionally ref'd. Interval body is a no-op; clear on stop().
+    this.#keepAlive = setInterval(() => {
+      /* keep-alive */
+    }, 60_000);
+  }
+
+  #clearKeepAlive(): void {
+    if (this.#keepAlive !== undefined) {
+      clearInterval(this.#keepAlive);
+      this.#keepAlive = undefined;
     }
   }
 
