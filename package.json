@@ -1,6 +1,6 @@
 {
   "name": "vardiya",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "SQLite-backed job queue for Node.js. Durable background jobs, retries, priorities and cron scheduling with zero infrastructure. No Redis.",
   "license": "MIT",
   "author": "Zulwatha",
@@ -20,7 +20,12 @@
       }
     }
   },
-  "files": ["dist", "README.md", "CHANGELOG.md", "LICENSE"],
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
   "engines": {
     "node": ">=22"
   },
