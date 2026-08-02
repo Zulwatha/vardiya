@@ -44,16 +44,18 @@
     "vitest": "^3.0.5"
   },
   "keywords": [
-    "job-queue",
+    "back-end",
     "queue",
+    "job-queue",
+    "task-queue",
+    "background-jobs",
     "sqlite",
     "better-sqlite3",
-    "background-jobs",
     "worker",
     "cron",
     "scheduler",
-    "task-queue",
     "delayed-jobs",
+    "retry",
     "bullmq-alternative"
   ],
   "repository": {
