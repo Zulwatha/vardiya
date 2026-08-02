@@ -140,7 +140,12 @@ export class Vardiya extends TypedEmitter<VardiyaEvents> {
     }
 
     const job = await Promise.resolve(storage.enqueue({ queue, name, payload, options: merged }));
-    this.emit("job:added", job);
+    // Repeat-only registration returns a non-persisted template snapshot.
+    const persisted = await Promise.resolve(storage.getJob(job.id));
+    if (persisted) {
+      this.emit("job:added", persisted);
+      return persisted as Job<T>;
+    }
     return job;
   }
 
@@ -225,7 +230,7 @@ export class Vardiya extends TypedEmitter<VardiyaEvents> {
     cron: string;
     key: string;
     payload?: unknown;
-    options?: Omit<EnqueueOptions, "repeat" | "delayMs" | "runAt" | "jobId">;
+    options?: Omit<EnqueueOptions, "repeat" | "delayMs" | "runAt" | "jobId" | "cron" | "repeatKey">;
   }): Promise<RepeatableJob> {
     const storage = this.#requireStorage();
     const queue = input.queue ?? this.options.defaultQueue ?? "default";

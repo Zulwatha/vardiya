@@ -46,6 +46,7 @@ type JobRow = {
   backoff_json: string | null;
   result_json: string | null;
   cancel_requested: number;
+  dedup_key: string | null;
 };
 
 type RepeatableRow = {
@@ -63,6 +64,7 @@ type RepeatableRow = {
 type Prepared = {
   insertJob: Statement;
   getJob: Statement;
+  getJobByDedup: Statement;
   complete: Statement;
   moveToDead: Statement;
   reschedule: Statement;
@@ -147,6 +149,7 @@ function rowToJob<T = unknown>(row: JobRow): Job<T> {
     updatedAt: row.updated_at,
   };
   if (row.last_error != null) job.lastError = row.last_error;
+  if (row.dedup_key != null) job.dedupKey = row.dedup_key;
   if (row.cron != null) job.cron = row.cron;
   if (row.repeat_key != null) job.repeatKey = row.repeat_key;
   return job;
@@ -172,7 +175,6 @@ function emptyCounts(): JobCounts {
     pending: 0,
     active: 0,
     completed: 0,
-    failed: 0,
     delayed: 0,
     dead: 0,
   };
@@ -237,15 +239,22 @@ export class SqliteStorage implements Storage {
   }
 
   /**
-   * Insert a job. When `options.jobId` already exists, returns the existing
-   * row (INSERT OR IGNORE). Future `runAt` starts as `delayed`.
+   * Insert a job. When `options.jobId` already exists in the same queue,
+   * returns that row. `jobs.id` is always generated; `jobId` is stored as
+   * `dedup_key`. When `repeat` is set without `jobId`, registers the schedule
+   * only and returns a non-persisted template snapshot.
    */
   enqueue<T = unknown>(input: EnqueueInput<T>): Job<T> {
     this.assertReady();
     const stmts = this.stmts;
     const now = Date.now();
     const options = input.options;
-    const id = options?.jobId ?? createId(now);
+
+    if (options?.repeat && options.jobId !== undefined) {
+      throw new Error(
+        "enqueue: jobId cannot be combined with repeat; occurrence ids are generated from the repeat key",
+      );
+    }
 
     let runAt = now;
     if (options?.runAt !== undefined) {
@@ -258,9 +267,48 @@ export class SqliteStorage implements Storage {
     const priority = options?.priority ?? 0;
     const maxAttempts = options?.maxAttempts ?? 1;
     const backoffJson = options?.backoff !== undefined ? JSON.stringify(options.backoff) : null;
-    const cron = options?.repeat?.cron ?? null;
-    const repeatKey = options?.repeat?.key ?? null;
     const payloadJson = JSON.stringify(input.payload ?? null);
+
+    // Convenience path: register a repeatable only; the scheduler materializes
+    // occurrences. Avoids a double-fire with the first maintenance tick.
+    const repeat = options?.repeat;
+    if (repeat) {
+      withBusyRetry(() =>
+        this.db.transaction(() => {
+          this.upsertRepeatableInTxn({
+            queue: input.queue,
+            name: input.name,
+            cron: repeat.cron,
+            key: repeat.key,
+            payload: input.payload,
+            options: omitRepeatFields(options ?? {}),
+            nextRunAt: runAt,
+          });
+        })(),
+      );
+
+      const snapshot: Job<T> = {
+        id: createId(now),
+        queue: input.queue,
+        name: input.name,
+        payload: input.payload,
+        status,
+        priority,
+        attempts: 0,
+        maxAttempts,
+        runAt,
+        createdAt: now,
+        updatedAt: now,
+        cron: repeat.cron,
+        repeatKey: repeat.key,
+      };
+      return snapshot;
+    }
+
+    const id = createId(now);
+    const dedupKey = options?.jobId ?? null;
+    const cron = options?.cron ?? null;
+    const repeatKey = options?.repeatKey ?? null;
 
     const insertAndMaybeRepeat = this.db.transaction(() => {
       const result = stmts.insertJob.run({
@@ -282,29 +330,22 @@ export class SqliteStorage implements Storage {
         backoff_json: backoffJson,
         result_json: null,
         cancel_requested: 0,
+        dedup_key: dedupKey,
       });
-
-      if (options?.repeat) {
-        this.upsertRepeatableInTxn({
-          queue: input.queue,
-          name: input.name,
-          cron: options.repeat.cron,
-          key: options.repeat.key,
-          payload: input.payload,
-          options: omitRepeatFields(options),
-          nextRunAt: runAt,
-        });
-      }
 
       return result.changes > 0;
     });
 
     const inserted = withBusyRetry(() => insertAndMaybeRepeat());
     if (!inserted) {
-      const existing = this.getJob(id);
+      if (dedupKey == null) {
+        throw new Error(`enqueue: job id ${id} was not inserted and had no dedup key`);
+      }
+      const existing = this.getJobByDedup(input.queue, dedupKey);
       if (existing) return existing as Job<T>;
-      // Race: row vanished between IGNORE and get; treat as fresh miss.
-      throw new Error(`enqueue: job id ${id} was not inserted and could not be loaded`);
+      throw new Error(
+        `enqueue: job dedup_key ${dedupKey} in queue ${input.queue} was not inserted and could not be loaded`,
+      );
     }
     return this.getJob(id) as Job<T>;
   }
@@ -334,7 +375,8 @@ export class SqliteStorage implements Storage {
   }
 
   /**
-   * Mark a job completed and optionally persist a JSON result.
+   * Mark an active job completed and optionally persist a JSON result.
+   * No-op when the row is not `active`.
    */
   complete(id: string, result?: unknown): void {
     this.assertReady();
@@ -350,8 +392,9 @@ export class SqliteStorage implements Storage {
   }
 
   /**
-   * Record a failure. Reschedules with backoff when retryable and attempts
-   * remain; otherwise moves the job to `dead`.
+   * Record a failure for an active job. Reschedules with backoff when
+   * retryable and attempts remain; otherwise moves the job to `dead`.
+   * No-op when the row is not `active` (returns the current job).
    */
   fail(input: FailInput): Job {
     this.assertReady();
@@ -361,6 +404,9 @@ export class SqliteStorage implements Storage {
       const row = this.stmts.getJob.get(input.id) as JobRow | undefined;
       if (!row) {
         throw new Error(`fail: job not found: ${input.id}`);
+      }
+      if (row.status !== "active") {
+        return row;
       }
 
       const retryable = input.retryable !== false;
@@ -400,7 +446,9 @@ export class SqliteStorage implements Storage {
   }
 
   /**
-   * Force a job into `dead` with the given error message.
+   * Force an active job into `dead` with the given error message.
+   * No-op when the row is not `active`. Pending/delayed cancel uses a
+   * separate path that does not go through this method.
    */
   moveToDead(id: string, error: string): void {
     this.assertReady();
@@ -459,21 +507,26 @@ export class SqliteStorage implements Storage {
 
   /**
    * Refresh heartbeat_at for an active job (stall detection).
+   * Returns true when cooperative cancel was requested.
    */
-  heartbeat(id: string, now: number): void {
+  heartbeat(id: string, now: number): boolean {
     this.assertReady();
-    withBusyRetry(() => this.stmts.heartbeat.run(now, now, id));
+    const row = withBusyRetry(
+      () => this.stmts.heartbeat.get(now, now, id) as { cancel_requested: number } | undefined,
+    );
+    return row !== undefined && row.cancel_requested === 1;
   }
 
   /**
-   * Return active jobs whose heartbeat is older than `staleAfterMs` to
-   * `pending`. Attempts are preserved (they were incremented on claim).
-   * Returns how many rows were reclaimed.
+   * Reclaim active jobs whose heartbeat is older than `staleAfterMs`.
+   * Exhausted attempts (`attempts >= max_attempts`) move to `dead`; the rest
+   * return to `pending`. Returns how many rows were updated.
    */
   reclaimStale(now: number, staleAfterMs: number): number {
     this.assertReady();
     const threshold = now - staleAfterMs;
-    const result = withBusyRetry(() => this.stmts.reclaimStale.run(now, threshold));
+    const staleError = "stalled: heartbeat expired after max attempts";
+    const result = withBusyRetry(() => this.stmts.reclaimStale.run(staleError, now, threshold));
     return result.changes;
   }
 
@@ -527,6 +580,16 @@ export class SqliteStorage implements Storage {
   getJob(id: string): Job | null {
     this.assertReady();
     const row = withBusyRetry(() => this.stmts.getJob.get(id) as JobRow | undefined);
+    return row ? rowToJob(row) : null;
+  }
+
+  /**
+   * Fetch a job by `(queue, dedup_key)`, or null.
+   */
+  private getJobByDedup(queue: string, dedupKey: string): Job | null {
+    const row = withBusyRetry(
+      () => this.stmts.getJobByDedup.get(queue, dedupKey) as JobRow | undefined,
+    );
     return row ? rowToJob(row) : null;
   }
 
@@ -639,24 +702,28 @@ export class SqliteStorage implements Storage {
   private prepareStatements(): Prepared {
     return {
       insertJob: this.db.prepare(`
-        INSERT OR IGNORE INTO jobs (
+        INSERT INTO jobs (
           id, queue, name, payload, status, priority, attempts, max_attempts,
           run_at, created_at, updated_at, last_error, cron, repeat_key,
-          heartbeat_at, backoff_json, result_json, cancel_requested
+          heartbeat_at, backoff_json, result_json, cancel_requested, dedup_key
         ) VALUES (
           @id, @queue, @name, @payload, @status, @priority, @attempts, @max_attempts,
           @run_at, @created_at, @updated_at, @last_error, @cron, @repeat_key,
-          @heartbeat_at, @backoff_json, @result_json, @cancel_requested
+          @heartbeat_at, @backoff_json, @result_json, @cancel_requested, @dedup_key
         )
+        ON CONFLICT(queue, dedup_key) WHERE dedup_key IS NOT NULL DO NOTHING
       `),
       getJob: this.db.prepare("SELECT * FROM jobs WHERE id = ?"),
+      getJobByDedup: this.db.prepare(`
+        SELECT * FROM jobs WHERE queue = ? AND dedup_key = ?
+      `),
       complete: this.db.prepare(`
         UPDATE jobs
         SET status = 'completed',
             updated_at = @updated_at,
             result_json = @result_json,
             heartbeat_at = NULL
-        WHERE id = @id
+        WHERE id = @id AND status = 'active'
       `),
       moveToDead: this.db.prepare(`
         UPDATE jobs
@@ -664,7 +731,7 @@ export class SqliteStorage implements Storage {
             last_error = @error,
             updated_at = @updated_at,
             heartbeat_at = NULL
-        WHERE id = @id
+        WHERE id = @id AND status = 'active'
       `),
       reschedule: this.db.prepare(`
         UPDATE jobs
@@ -674,7 +741,7 @@ export class SqliteStorage implements Storage {
             updated_at = @updated_at,
             heartbeat_at = NULL,
             cancel_requested = 0
-        WHERE id = @id
+        WHERE id = @id AND status = 'active'
       `),
       promoteDelayed: this.db.prepare(`
         UPDATE jobs
@@ -685,10 +752,18 @@ export class SqliteStorage implements Storage {
         UPDATE jobs
         SET heartbeat_at = ?, updated_at = ?
         WHERE id = ? AND status = 'active'
+        RETURNING cancel_requested
       `),
       reclaimStale: this.db.prepare(`
         UPDATE jobs
-        SET status = 'pending',
+        SET status = CASE
+              WHEN attempts >= max_attempts THEN 'dead'
+              ELSE 'pending'
+            END,
+            last_error = CASE
+              WHEN attempts >= max_attempts THEN ?
+              ELSE last_error
+            END,
             updated_at = ?,
             heartbeat_at = NULL,
             cancel_requested = 0
@@ -712,7 +787,7 @@ export class SqliteStorage implements Storage {
             last_error = @error,
             updated_at = @updated_at,
             heartbeat_at = NULL
-        WHERE id = @id
+        WHERE id = @id AND status IN ('pending', 'delayed')
       `),
       cancelActive: this.db.prepare(`
         UPDATE jobs
@@ -800,8 +875,9 @@ function parseBackoff(json: string | null): BackoffOptions | null {
 
 function omitRepeatFields(
   options: EnqueueOptions,
-): Omit<EnqueueOptions, "repeat" | "delayMs" | "runAt" | "jobId"> {
-  const out: Omit<EnqueueOptions, "repeat" | "delayMs" | "runAt" | "jobId"> = {};
+): Omit<EnqueueOptions, "repeat" | "delayMs" | "runAt" | "jobId" | "cron" | "repeatKey"> {
+  const out: Omit<EnqueueOptions, "repeat" | "delayMs" | "runAt" | "jobId" | "cron" | "repeatKey"> =
+    {};
   if (options.priority !== undefined) out.priority = options.priority;
   if (options.maxAttempts !== undefined) out.maxAttempts = options.maxAttempts;
   if (options.backoff !== undefined) out.backoff = options.backoff;

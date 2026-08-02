@@ -63,8 +63,9 @@ export interface MaintenanceTickResult {
 }
 
 /**
- * Build the idempotency job id for one occurrence of a repeatable.
+ * Build the per-queue dedup key for one occurrence of a repeatable.
  * Format: `repeat:{queue}:{key}:{scheduledAtMs}`.
+ * Stored as {@link import("../types.js").Job.dedupKey} (not the row PK).
  */
 export function repeatOccurrenceJobId(queue: string, key: string, scheduledAtMs: number): string {
   return `repeat:${queue}:${key}:${scheduledAtMs}`;
@@ -76,7 +77,7 @@ export function repeatOccurrenceJobId(queue: string, key: string, scheduledAtMs:
  * Each tick:
  * 1. Promote delayed jobs whose runAt has arrived.
  * 2. Reclaim stalled active jobs (stale heartbeat).
- * 3. Materialize due repeatables into concrete jobs (deduped by job id).
+ * 3. Materialize due repeatables into concrete jobs (deduped by occurrence key).
  * 4. Optionally clean up old completed/dead jobs.
  *
  * Depends only on the {@link Storage} interface.
@@ -203,8 +204,8 @@ export class MaintenanceLoop {
 
   /**
    * For every repeatable whose nextRunAt is due, enqueue a job and advance
-   * nextRunAt. Uses {@link repeatOccurrenceJobId} so a retried tick cannot
-   * create duplicates.
+   * nextRunAt. Uses {@link repeatOccurrenceJobId} as the per-queue dedup key
+   * so a retried tick cannot create duplicates.
    */
   private async materializeRepeatables(now: number): Promise<number> {
     const list = await Promise.resolve(this.storage.listRepeatables());
@@ -234,13 +235,16 @@ export class MaintenanceLoop {
     let cursor = nextAt;
 
     while (cursor <= now && produced < this.maxCatchUpPerRepeatable) {
-      const jobId = repeatOccurrenceJobId(repeatable.queue, repeatable.key, cursor);
+      const dedupKey = repeatOccurrenceJobId(repeatable.queue, repeatable.key, cursor);
 
+      // Do not pass `repeat` here: that path registers a schedule only and
+      // would skip inserting the occurrence job.
       const enqueueOptions: EnqueueOptions = {
         ...repeatable.options,
         runAt: cursor,
-        jobId,
-        repeat: { cron: repeatable.cron, key: repeatable.key },
+        jobId: dedupKey,
+        cron: repeatable.cron,
+        repeatKey: repeatable.key,
       };
 
       await Promise.resolve(

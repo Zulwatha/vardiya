@@ -70,7 +70,7 @@ Events this module emits at the right moment:
 | `worker:started` | After `start()` begins the loop |
 | `job:active` | Job claimed, about to run the handler |
 | `job:completed` | Handler returned; `storage.complete` succeeded |
-| `job:failed` | Retryable failure; job still eligible for retry |
+| `job:failed` | Retryable failure; a retry was scheduled (not a stored status) |
 | `job:dead` | UnrecoverableError, missing handler, or retries exhausted |
 | `worker:stopped` | After drain/abort finishes in `stop()` |
 | `error` | Unexpected internal/storage problems (process stays up) |

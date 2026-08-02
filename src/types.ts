@@ -12,12 +12,10 @@
  * - `pending`: ready to be claimed by a worker
  * - `active`: claimed and currently running
  * - `completed`: finished successfully
- * - `failed`: exhausted a retryable failure (may still be eligible for retry
- *   depending on attempts vs maxAttempts; storage decides when it becomes dead)
- * - `delayed`: scheduled for a future `runAt`
+ * - `delayed`: scheduled for a future `runAt` (including retry backoff waits)
  * - `dead`: permanently failed or cancelled; will not run again
  */
-export type JobStatus = "pending" | "active" | "completed" | "failed" | "delayed" | "dead";
+export type JobStatus = "pending" | "active" | "completed" | "delayed" | "dead";
 
 /**
  * How retries wait between attempts.
@@ -64,12 +62,19 @@ export interface EnqueueOptions {
    */
   backoff?: BackoffOptions;
   /**
-   * Caller-supplied id for idempotency. If a job with this id already exists
-   * in the same queue, enqueue is a no-op (or returns the existing job).
+   * Caller-supplied idempotency key within the queue. Stored as
+   * {@link Job.dedupKey}. If a job with this key already exists in the same
+   * queue, enqueue returns that existing job. The row's {@link Job.id} is
+   * always a generated primary key.
    */
   jobId?: string;
   /**
-   * When set, the job is also registered as a repeatable schedule.
+   * When set, registers a repeatable schedule only (same idea as upserting a
+   * repeatable). The maintenance loop materializes occurrences into concrete
+   * jobs. The returned {@link Job} is a template snapshot and is not stored
+   * until an occurrence is materialized. Cannot be combined with {@link jobId}
+   * (occurrence dedup keys are derived from the repeat key).
+   *
    * `cron` is a standard 5-field cron expression. `key` uniquely identifies
    * the schedule within the queue for upserts and cancellation.
    */
@@ -77,6 +82,15 @@ export interface EnqueueOptions {
     cron: string;
     key: string;
   };
+  /**
+   * Cron expression stamped on the job row. Set by the scheduler when
+   * materializing a repeatable occurrence.
+   */
+  cron?: string;
+  /**
+   * Repeatable schedule key stamped on the job row when materializing.
+   */
+  repeatKey?: string;
 }
 
 /**
@@ -85,7 +99,7 @@ export interface EnqueueOptions {
  * @typeParam T - Shape of `payload`. Defaults to `unknown`.
  */
 export interface Job<T = unknown> {
-  /** Unique job id (caller-supplied or generated). */
+  /** Globally unique primary key (always generated). */
   id: string;
   /** Queue name this job belongs to. */
   queue: string;
@@ -112,6 +126,11 @@ export interface Job<T = unknown> {
   updatedAt: number;
   /** Message from the most recent failure, if any. */
   lastError?: string;
+  /**
+   * Caller-supplied idempotency key from {@link EnqueueOptions.jobId}, unique
+   * within {@link queue} when set.
+   */
+  dedupKey?: string;
   /** Cron expression when this job was produced by a repeatable schedule. */
   cron?: string;
   /** Repeatable schedule key when this job is tied to a repeat registration. */
@@ -123,8 +142,9 @@ export interface Job<T = unknown> {
  */
 export interface JobContext {
   /**
-   * Aborted when the worker is shutting down or the job is cancelled.
-   * Handlers should check this (or listen for abort) for cooperative cancel.
+   * Aborted when the worker is shutting down, the job times out, or an active
+   * job is cancelled (`cancel_requested` observed on heartbeat). Handlers
+   * should check this (or listen for abort) for cooperative cancel.
    */
   signal: AbortSignal;
   /**
@@ -173,7 +193,6 @@ export interface JobCounts {
   pending: number;
   active: number;
   completed: number;
-  failed: number;
   delayed: number;
   dead: number;
 }
@@ -193,7 +212,7 @@ export interface RepeatableJob {
   /** Template payload cloned into each produced job. */
   payload: unknown;
   /** Options applied when producing each occurrence. */
-  options: Omit<EnqueueOptions, "repeat" | "delayMs" | "runAt" | "jobId">;
+  options: Omit<EnqueueOptions, "repeat" | "delayMs" | "runAt" | "jobId" | "cron" | "repeatKey">;
   /** Next planned fire time as unix ms, if known. */
   nextRunAt?: number;
   /** Creation time as unix ms. */
@@ -295,7 +314,8 @@ export interface Storage {
   /**
    * Insert a job (or return the existing one when `options.jobId` already
    * exists for that queue). Jobs with a future `runAt` start as `delayed`;
-   * otherwise as `pending`.
+   * otherwise as `pending`. When `options.repeat` is set without `jobId`,
+   * registers the schedule only and returns a non-persisted template snapshot.
    */
   enqueue<T = unknown>(input: EnqueueInput<T>): Job<T> | Promise<Job<T>>;
 
@@ -316,8 +336,9 @@ export interface Storage {
   complete(id: string, result?: unknown): void | Promise<void>;
 
   /**
-   * Record a failure. May reschedule (failed/delayed) or move to dead based
-   * on attempts and {@link FailInput.retryable}.
+   * Record a failure for an active job. May reschedule (`pending`/`delayed`)
+   * or move to dead based on attempts and {@link FailInput.retryable}.
+   * No-op when the row is no longer `active` (returns the current job).
    */
   fail(input: FailInput): Job | Promise<Job>;
 
@@ -348,14 +369,16 @@ export interface Storage {
 
   /**
    * Refresh the heartbeat timestamp for an active job so stall detection
-   * does not reclaim it.
+   * does not reclaim it. Returns `true` when cooperative cancel was requested
+   * for that job (`cancel_requested`).
    */
-  heartbeat(id: string, now: number): void | Promise<void>;
+  heartbeat(id: string, now: number): boolean | Promise<boolean>;
 
   /**
-   * Return active jobs whose heartbeat is older than `staleAfterMs` to
-   * `pending`. Attempts stay as they were after claim (the claim already
-   * counted). Returns how many rows were reclaimed.
+   * Reclaim active jobs whose heartbeat is older than `staleAfterMs`.
+   * Rows with `attempts >= maxAttempts` move to `dead`; the rest return to
+   * `pending`. Attempts stay as they were after claim. Returns how many rows
+   * were updated.
    *
    * @param now - Current time as unix ms.
    * @param staleAfterMs - Heartbeats older than `now - staleAfterMs` are stale.

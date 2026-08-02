@@ -369,15 +369,23 @@ export class WorkerRuntime extends TypedEmitter<VardiyaEvents> {
       controller.abort();
     }
 
+    let cancelRequested = false;
+    const onCancelRequested = () => {
+      cancelRequested = true;
+      if (!controller.signal.aborted) {
+        controller.abort();
+      }
+    };
+
     const heartbeatTimer = setInterval(() => {
-      void this.#safeHeartbeat(job.id);
+      void this.#safeHeartbeat(job.id, onCancelRequested);
     }, this.#options.heartbeatIntervalMs);
     unrefTimer(heartbeatTimer);
 
     const ctx: JobContext = {
       signal: controller.signal,
       touch: () => {
-        void this.#safeHeartbeat(job.id);
+        void this.#safeHeartbeat(job.id, onCancelRequested);
       },
       log: (msg: string) => {
         try {
@@ -405,7 +413,7 @@ export class WorkerRuntime extends TypedEmitter<VardiyaEvents> {
         this.#emitInternalError(err);
       }
     } catch (err) {
-      await this.#handleJobFailure(job, err, { timedOut, controller });
+      await this.#handleJobFailure(job, err, { timedOut, controller, cancelRequested });
     } finally {
       if (timeoutTimer !== undefined) {
         clearTimeout(timeoutTimer);
@@ -454,7 +462,7 @@ export class WorkerRuntime extends TypedEmitter<VardiyaEvents> {
   async #handleJobFailure(
     job: Job,
     err: unknown,
-    meta: { timedOut: boolean; controller: AbortController },
+    meta: { timedOut: boolean; controller: AbortController; cancelRequested: boolean },
   ): Promise<void> {
     const shuttingDown = this.#state === "stopping" || this.#state === "stopped";
     const aborted = meta.controller.signal.aborted;
@@ -466,6 +474,19 @@ export class WorkerRuntime extends TypedEmitter<VardiyaEvents> {
         await this.#releaseToPending(job);
       } catch (releaseErr) {
         this.#emitInternalError(releaseErr);
+      }
+      return;
+    }
+
+    // Cooperative cancel: active job was marked cancel_requested; heartbeats
+    // aborted the signal. Move to dead rather than retrying.
+    if (meta.cancelRequested && aborted && !meta.timedOut) {
+      const error = toError(err, "Job cancelled");
+      try {
+        await this.#storage.moveToDead(job.id, "cancelled");
+        this.emit("job:dead", job, error);
+      } catch (storageErr) {
+        this.#emitInternalError(storageErr);
       }
       return;
     }
@@ -503,9 +524,16 @@ export class WorkerRuntime extends TypedEmitter<VardiyaEvents> {
     await this.#storage.release(job.id);
   }
 
-  async #safeHeartbeat(id: string): Promise<void> {
+  /**
+   * Refresh the heartbeat. When storage reports cancel_requested, abort the
+   * job's AbortController so handlers can stop cooperatively.
+   */
+  async #safeHeartbeat(id: string, onCancelRequested?: () => void): Promise<void> {
     try {
-      await this.#storage.heartbeat(id, Date.now());
+      const cancelRequested = await this.#storage.heartbeat(id, Date.now());
+      if (cancelRequested) {
+        onCancelRequested?.();
+      }
     } catch (err) {
       this.#emitInternalError(err);
     }

@@ -4,7 +4,8 @@
  * Measures enqueue/sec and end-to-end process/sec at concurrency 1 / 8 / 32
  * on a temp-file SQLite database. Prints a markdown table to stdout.
  *
- * Run: `npm run bench` (vite-node) or `npx vite-node bench/bench.ts`
+ * Run: `npm run bench` or `npx tsx bench/bench.ts`.
+ * Set `BENCH_N` for a smaller run (applies to both enqueue and e2e counts).
  *
  * No external bench libraries. Numbers vary by disk and CPU; treat them as
  * ballpark, not a marketing claim.
@@ -16,8 +17,9 @@ import { join } from "node:path";
 import { SqliteStorage } from "../src/storage/sqlite.js";
 import { WorkerRuntime } from "../src/worker/worker.js";
 
-const ENQUEUE_N = 20_000;
-const E2E_N = 10_000;
+const BENCH_N = Number(process.env.BENCH_N);
+const ENQUEUE_N = Number.isFinite(BENCH_N) && BENCH_N > 0 ? BENCH_N : 20_000;
+const E2E_N = Number.isFinite(BENCH_N) && BENCH_N > 0 ? BENCH_N : 10_000;
 const CONCURRENCIES = [1, 8, 32] as const;
 
 function tempDbPath(): { path: string; cleanup: () => void } {

@@ -88,10 +88,12 @@ await v.enqueue(name, payload, {
   runAt?: number;             // unix ms
   maxAttempts?: number;       // default 1
   backoff?: BackoffOptions;
-  jobId?: string;             // idempotency key within the queue
-  repeat?: { cron: string; key: string };
+  jobId?: string;             // per-queue idempotency key (stored as job.dedupKey, not job.id)
+  repeat?: { cron: string; key: string }; // registers a schedule only; no immediate job row
 });
 ```
+
+`jobId` is unique per queue, not global. The row's `job.id` is always a generated primary key; the caller key is exposed as `job.dedupKey`. Combining `jobId` with `repeat` throws; occurrence dedup keys are generated from the repeat key. When `repeat` is set, enqueue registers the schedule only and the maintenance loop materializes occurrences later.
 
 ### Retries and exponential backoff
 
@@ -108,7 +110,7 @@ const worker = v.createWorker({
 });
 
 worker.process(name, async (job, ctx) => {
-  // ctx.signal: aborted on shutdown / timeout
+  // ctx.signal: aborted on shutdown / timeout / cancel of an active job
   // ctx.touch(): refresh heartbeat during long work
   // ctx.log(msg): structured log hook
   return result;
@@ -135,12 +137,14 @@ await v.upsertRepeatable({
 await v.listRepeatables(queue?);
 ```
 
+Cron expressions are evaluated in UTC. `0 9 * * *` runs at 09:00 UTC every day, not at 09:00 in the host's local timezone. Example: from `2024-01-01T10:15:00Z`, `0 * * * *` next runs at `2024-01-01T11:00:00Z`.
+
 ### Inspection and cleanup
 
 ```ts
 await v.getJob(id);
 await v.cancel(id);
-await v.counts(queue?);           // { pending, active, completed, failed, delayed, dead }
+await v.counts(queue?);           // { pending, active, completed, delayed, dead }
 await v.cleanup(olderThanMs);     // deletes old completed/dead rows
 ```
 
@@ -150,10 +154,12 @@ await v.cleanup(olderThanMs);     // deletes old completed/dead rows
 
 ```ts
 v.on("job:completed", (job, result) => { /* ... */ });
-v.on("job:failed", (job, err) => { /* ... */ });
+v.on("job:failed", (job, err) => { /* ... */ }); // retry scheduled (job is pending/delayed)
 v.on("job:dead", (job, err) => { /* ... */ });
 v.on("error", (err) => { /* ... */ });
 ```
+
+`job:failed` fires when a retry is scheduled (the job goes back to `pending` or `delayed`). It is not a stored status. Permanently failed jobs emit `job:dead` instead; use `counts().dead` for that bucket.
 
 ## Delivery guarantees
 
@@ -162,7 +168,7 @@ vardiya is **at-least-once**. A job can run more than once if a worker dies afte
 Practical advice:
 
 1. Prefer idempotent handlers. Use `job.id` or a business key as a dedup token in your own DB.
-2. Pass `jobId` on enqueue when the producer might retry (HTTP handler doubles, etc.).
+2. Pass `jobId` on enqueue when the producer might retry (HTTP handler doubles, etc.). Dedup is per queue via `job.dedupKey`; `job.id` is always generated.
 3. Call `ctx.touch()` (or rely on the automatic heartbeat) for long jobs so stall reclaim does not steal them mid-flight.
 4. Use `maxAttempts` and dead letter for poison messages; do not retry forever into a bad payload.
 
@@ -212,7 +218,7 @@ BullMQ is a Redis-backed queue with a large ecosystem (dashboards, rate limits, 
 
 ### Does it support cron / repeatable jobs?
 
-Yes. `upsertRepeatable` takes a 5-field cron expression (and aliases like `@hourly`, `@daily`, `@weekly`, `@monthly`). The scheduler materializes due runs into normal jobs. See the Quick start and API sections above.
+Yes. `upsertRepeatable` takes a 5-field cron expression (and aliases like `@hourly`, `@daily`, `@weekly`, `@monthly`). Expressions are evaluated in UTC. The scheduler materializes due runs into normal jobs. See the Quick start and API sections above.
 
 ### Is it safe with multiple workers?
 

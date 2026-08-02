@@ -4,7 +4,7 @@ import type Database from "better-sqlite3";
  * Schema version stamped into `PRAGMA user_version`.
  * Bump when you add a migration below; never reuse a version number.
  */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 /**
  * Migration 1: initial jobs + repeatables + meta tables.
@@ -28,7 +28,11 @@ export const SCHEMA_VERSION = 1;
  * - `idx_jobs_cleanup (status, updated_at) WHERE status IN ('completed','dead')`
  *   Partial index for `cleanup` of terminal rows by age.
  */
-const MIGRATION_1 = `
+/**
+ * Exact SQL for schema version 1. Exported so migration tests can build a
+ * real v1 database without editing this string in two places.
+ */
+export const SCHEMA_V1_SQL = `
 CREATE TABLE jobs (
   id TEXT PRIMARY KEY NOT NULL,
   queue TEXT NOT NULL,
@@ -87,12 +91,89 @@ CREATE TABLE meta (
 );
 `;
 
+const MIGRATION_1 = SCHEMA_V1_SQL;
+
+/**
+ * Migration 2:
+ * - Drop unused `failed` status from the jobs CHECK constraint.
+ * - Add `dedup_key` for per-queue idempotency (`EnqueueOptions.jobId`).
+ * - `jobs.id` stays the always-unique primary key; caller jobIds move to
+ *   `dedup_key` with UNIQUE (queue, dedup_key) WHERE dedup_key IS NOT NULL.
+ *
+ * Existing rows keep their id and copy it into dedup_key so prior jobId
+ * dedup behavior still hits the same row via (queue, dedup_key).
+ */
+const MIGRATION_2 = `
+CREATE TABLE jobs_v2 (
+  id TEXT PRIMARY KEY NOT NULL,
+  queue TEXT NOT NULL,
+  name TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (
+    status IN ('pending', 'active', 'completed', 'delayed', 'dead')
+  ),
+  priority INTEGER NOT NULL DEFAULT 0,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 1,
+  run_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  last_error TEXT,
+  cron TEXT,
+  repeat_key TEXT,
+  heartbeat_at INTEGER,
+  backoff_json TEXT,
+  result_json TEXT,
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  dedup_key TEXT
+);
+
+INSERT INTO jobs_v2 (
+  id, queue, name, payload, status, priority, attempts, max_attempts,
+  run_at, created_at, updated_at, last_error, cron, repeat_key,
+  heartbeat_at, backoff_json, result_json, cancel_requested, dedup_key
+)
+SELECT
+  id, queue, name, payload,
+  CASE status WHEN 'failed' THEN 'dead' ELSE status END,
+  priority, attempts, max_attempts,
+  run_at, created_at, updated_at, last_error, cron, repeat_key,
+  heartbeat_at, backoff_json, result_json, cancel_requested,
+  id
+FROM jobs;
+
+DROP TABLE jobs;
+ALTER TABLE jobs_v2 RENAME TO jobs;
+
+CREATE INDEX idx_jobs_claim
+  ON jobs (queue, status, priority DESC, run_at, id);
+
+CREATE INDEX idx_jobs_promote
+  ON jobs (status, run_at)
+  WHERE status = 'delayed';
+
+CREATE INDEX idx_jobs_stale
+  ON jobs (status, heartbeat_at)
+  WHERE status = 'active';
+
+CREATE INDEX idx_jobs_cleanup
+  ON jobs (status, updated_at)
+  WHERE status IN ('completed', 'dead');
+
+CREATE UNIQUE INDEX idx_jobs_dedup
+  ON jobs (queue, dedup_key)
+  WHERE dedup_key IS NOT NULL;
+`;
+
 type Migration = {
   version: number;
   sql: string;
 };
 
-const MIGRATIONS: Migration[] = [{ version: 1, sql: MIGRATION_1 }];
+const MIGRATIONS: Migration[] = [
+  { version: 1, sql: MIGRATION_1 },
+  { version: 2, sql: MIGRATION_2 },
+];
 
 /**
  * Apply all pending migrations using `PRAGMA user_version` as the watermark.

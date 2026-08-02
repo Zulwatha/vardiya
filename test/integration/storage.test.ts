@@ -231,7 +231,9 @@ describe("SqliteStorage integration", () => {
         options: { jobId: "same-id" },
       });
 
+      expect(a.dedupKey).toBe("same-id");
       expect(b.id).toBe(a.id);
+      expect(b.dedupKey).toBe("same-id");
       expect(b.payload).toEqual({ v: 1 });
       expect(storage.counts("dedup").pending).toBe(1);
     });
@@ -339,8 +341,11 @@ describe("SqliteStorage integration", () => {
         countsAfterSecond.completed;
       expect(totalAfterSecond).toBe(totalAfterFirst);
 
-      const expectedId = repeatOccurrenceJobId("cron-q", "hourly", t0);
-      expect(storage.getJob(expectedId)).not.toBeNull();
+      const expectedDedup = repeatOccurrenceJobId("cron-q", "hourly", t0);
+      const claimed = storage.claimNext(["cron-q"], Date.now());
+      expect(claimed?.job.dedupKey).toBe(expectedDedup);
+      expect(claimed?.job.cron).toBe("0 * * * *");
+      expect(claimed?.job.repeatKey).toBe("hourly");
     });
   });
 });
